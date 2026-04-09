@@ -1,1 +1,6 @@
-data/
+data/raw/
+data/processed/parsed_logs.csv
+data/processed/sequences.csv
+data/processed/predictions.csv
+data/processed/tfidf_matrix.npz
+data/processed/labels.npy
