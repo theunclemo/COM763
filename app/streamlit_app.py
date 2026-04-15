@@ -1,5 +1,4 @@
 import sys
-import ast
 import re
 import logging
 import numpy as np
@@ -7,13 +6,14 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import streamlit as st
 import joblib
+from scipy.sparse import issparse, diags
 from drain3 import TemplateMiner
 from drain3.template_miner_config import TemplateMinerConfig
 
 sys.path.append(".")
 
-# ── regex patterns (must match parsing.py exactly) ──────────────────────────
-LOG_PATTERN   = re.compile(
+# ── regex patterns ────────────────────────────────────────────────────────────
+LOG_PATTERN = re.compile(
     r"^(\d{6})\s+(\d{6})\s+(\d+)\s+(\w+)\s+([\w.$]+):\s+(.+)$"
 )
 BLOCK_PATTERN = re.compile(r"(blk_-?\d+)")
@@ -33,8 +33,7 @@ def clean_content(content: str) -> str:
 def load_model_and_vectorizer():
     model      = joblib.load("data/processed/isolation_forest.joblib")
     vectorizer = joblib.load("data/processed/tfidf_vectorizer.joblib")
-    scaler     = joblib.load("data/processed/scaler.joblib")
-    return model, vectorizer, scaler
+    return model, vectorizer
 
 
 @st.cache_resource
@@ -87,16 +86,21 @@ def build_sequences(df: pd.DataFrame) -> pd.DataFrame:
     return sequences
 
 
-def predict_sequences(sequences: pd.DataFrame, model, vectorizer, scaler):
-    X        = vectorizer.transform(sequences["sequence_str"])
-    X_scaled = scaler.transform(X)
+def predict_sequences(sequences: pd.DataFrame, model, vectorizer):
+    X = vectorizer.transform(sequences["sequence_str"])
 
-    # raw anomaly scores from Isolation Forest
-    # lower raw score = more anomalous
-    raw_scores = model.decision_function(X_scaled)
+    # apply MaxAbsScaler manually to avoid sklearn version
+    # mismatch on the saved scaler object
+    if issparse(X):
+        max_abs = np.asarray(np.abs(X).max(axis=0)).flatten()
+        max_abs[max_abs == 0] = 1
+        X_scaled = X.dot(diags(1.0 / max_abs))
+    else:
+        max_abs = np.abs(X).max(axis=0)
+        max_abs[max_abs == 0] = 1
+        X_scaled = X / max_abs
 
-    # normalise to 0-100 risk scale (inverted)
-    # 100 = most anomalous, 0 = most normal
+    raw_scores  = model.decision_function(X_scaled)
     min_s       = raw_scores.min()
     max_s       = raw_scores.max()
     risk_scores = 100 * (1 - (raw_scores - min_s) / (max_s - min_s))
@@ -104,16 +108,16 @@ def predict_sequences(sequences: pd.DataFrame, model, vectorizer, scaler):
     raw_preds    = model.predict(X_scaled)
     preds_binary = np.where(raw_preds == -1, 1, 0)
 
-    sequences                  = sequences.copy()
-    sequences["risk_score"]    = np.round(risk_scores, 1)
-    sequences["prediction"]    = preds_binary
-    sequences["status"]        = np.where(
+    sequences               = sequences.copy()
+    sequences["risk_score"] = np.round(risk_scores, 1)
+    sequences["prediction"] = preds_binary
+    sequences["status"]     = np.where(
         preds_binary == 1, "🔴 Anomaly", "🟢 Normal"
     )
     return sequences
 
 
-# ── Page config ──────────────────────────────────────────────────────────────
+# ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Log Anomaly Detection",
     page_icon="🔍",
@@ -123,7 +127,7 @@ st.set_page_config(
 st.title("🔍 Intelligent Log Anomaly Detection System")
 st.markdown(
     "Upload a raw HDFS log file. The system will parse it, extract event "
-    "sequences, and flag anomalous block behaviours using a trained "
+    "sequences and flag anomalous block behaviours using a trained "
     "Isolation Forest model."
 )
 
@@ -146,8 +150,8 @@ with st.sidebar:
     show_normal = st.checkbox("Show normal sequences", value=False)
 
 # ── Load model ────────────────────────────────────────────────────────────────
-model, vectorizer, scaler = load_model_and_vectorizer()
-miner                     = load_drain3_miner()
+model, vectorizer = load_model_and_vectorizer()
+miner             = load_drain3_miner()
 
 # ── File upload ───────────────────────────────────────────────────────────────
 uploaded_file = st.file_uploader(
@@ -173,7 +177,7 @@ if uploaded_file is not None:
         sequences = build_sequences(df)
 
     with st.spinner("Running anomaly detection..."):
-        results = predict_sequences(sequences, model, vectorizer, scaler)
+        results = predict_sequences(sequences, model, vectorizer)
 
     # ── Summary metrics ───────────────────────────────────────────────────────
     st.divider()
