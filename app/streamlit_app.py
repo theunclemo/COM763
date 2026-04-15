@@ -1,6 +1,5 @@
 import sys
 import re
-import logging
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -92,7 +91,7 @@ def predict_sequences(sequences: pd.DataFrame, model, vectorizer):
     # apply MaxAbsScaler manually to avoid sklearn version
     # mismatch on the saved scaler object
     if issparse(X):
-        max_abs = np.asarray(np.abs(X).max(axis=0)).flatten()
+        max_abs = np.asarray(np.abs(X).max(axis=0).todense()).flatten()
         max_abs[max_abs == 0] = 1
         X_scaled = X.dot(diags(1.0 / max_abs))
     else:
@@ -234,14 +233,18 @@ if uploaded_file is not None:
         st.caption(f"Showing all {len(display_df):,} sequences.")
 
     st.dataframe(
-        display_df.sort_values("risk_score", ascending=False).reset_index(drop=True),
+        display_df.sort_values(
+            "risk_score", ascending=False
+        ).reset_index(drop=True),
         use_container_width=True,
         height=400
     )
 
     # ── Download ──────────────────────────────────────────────────────────────
     st.divider()
-    csv = results[["block_id", "status", "risk_score", "sequence_str"]].to_csv(index=False)
+    csv = results[
+        ["block_id", "status", "risk_score", "sequence_str"]
+    ].to_csv(index=False)
     st.download_button(
         label="⬇️ Download Results CSV",
         data=csv,
